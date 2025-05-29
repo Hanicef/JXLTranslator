@@ -148,3 +148,4 @@ private:
 void translate_direct_copy(BPositionIO *inSource, BPositionIO *outDestination);
 
 #endif // #ifndef BASE_TRANSLATOR_H
+

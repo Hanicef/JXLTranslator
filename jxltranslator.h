@@ -1,5 +1,6 @@
 /*
  * Copyright 2021, Craig Watson <watsoncraigjohn@gmail.com>
+ * Copyright 2025, Gustaf "Hanicef" Alhäll <gustaf@hanicef.me>
  * All rights reserved. Distributed under the terms of the MIT license.
  */
 #ifndef JXLTRANSLATOR_H
@@ -40,10 +41,6 @@ protected:
 
 private:
 	status_t IdentifyJXL(BPositionIO *inSource, translator_info *outInfo);
-	status_t PopulateInfoFromFormat(translator_info* info,
-				uint32 formatType, translator_id id=0);
-	status_t PopulateInfoFromFormat(translator_info* info,
-				uint32 formatType, const translation_format* formats, int32 formatCount);
 	status_t Decompress(BPositionIO* in, BPositionIO* out);
 	status_t Compress(BPositionIO* in, BPositionIO* out);
 	status_t BitmapPixelsToJxl(uint8* pixels, size_t size, int xsize, int ysize, uint32 bpp,

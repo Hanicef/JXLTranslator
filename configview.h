@@ -1,5 +1,6 @@
 /*
  * Copyright 2021, Craig Watson <watsoncraigjohn@gmail.com>
+ * Copyright 2025, Gustaf "Hanicef" Alhäll <gustaf@hanicef.me>
  * All rights reserved. Distributed under the terms of the MIT license.
  */
 #ifndef CONFIGVIEW_H
@@ -9,6 +10,9 @@
 #include <Slider.h>
 
 #include "TranslatorSettings.h"
+
+#define JXL_VIEW_WIDTH		300
+#define JXL_VIEW_HEIGHT		270
 
 
 class ConfigView : public BGroupView {

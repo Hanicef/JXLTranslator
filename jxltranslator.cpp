@@ -1,5 +1,6 @@
 /*
  * Copyright 2021, Craig Watson <watsoncraigjohn@gmail.com>
+ * Copyright 2025, Gustaf "Hanicef" Alhäll <gustaf@hanicef.me>
  * All rights reserved. Distributed under the terms of the MIT license.
  */
 #include "jxltranslator.h"
@@ -10,10 +11,10 @@
 #include <TranslatorFormats.h>
 #include <TranslationDefs.h>
 #include <syslog.h>
+#include <vector>
 
 #include <jxl/decode.h>
 #include <jxl/encode.h>
-#include <jxl/thread_parallel_runner.h>
 
 #include "configview.h"
 #include "TranslatorSettings.h"
@@ -39,6 +40,9 @@ static const TranSetting sDefaultSettings[] = {
 	{JXL_SETTING_DISTANCE, TRAN_SETTING_INT32, JXL_DEFAULT_DISTANCE},
 	{JXL_SETTING_EFFORT, TRAN_SETTING_INT32, JXL_DEFAULT_EFFORT}	
 };
+
+static const char sJXLHeader[] = { (char)0xff, 0x0a };
+static const char sJPEGCompatHeader[] = { 0, 0, 0, 0x0c, 0x4a, 0x58, 0x4c, 0x20 };
 
 const uint32 kNumInputFormats = sizeof(sInputFormats) / sizeof(translation_format);
 const uint32 kNumOutputFormats = sizeof(sOutputFormats) / sizeof(translation_format);
@@ -66,31 +70,25 @@ JXLTranslator::IdentifyJXL(BPositionIO *inSource, translator_info *outInfo)
 {
 	off_t position;
 	position = inSource->Position();
-	char header[sizeof(TranslatorBitmap)];
-	status_t err = inSource->Read(header, sizeof(TranslatorBitmap));
+	char header[8];
+	status_t err = inSource->Read(header, 8);
 	inSource->Seek(position, SEEK_SET);
 	if (err < B_OK)
 		return err;
 		
-	if (B_BENDIAN_TO_HOST_INT32(((TranslatorBitmap *)header)->magic) == B_TRANSLATOR_BITMAP)
+	if (memcmp(header, sJXLHeader, sizeof(sJXLHeader)) ||
+		memcmp(header, sJPEGCompatHeader, sizeof(sJPEGCompatHeader)))
 	{
-		if (PopulateInfoFromFormat(outInfo, B_TRANSLATOR_BITMAP) != B_OK)
-			return B_NO_TRANSLATOR;	
+		outInfo->type = JXL_FORMAT;
+		outInfo->group = B_TRANSLATOR_BITMAP;
+		outInfo->quality = JXL_IN_QUALITY;
+		outInfo->capability = JXL_IN_CAPABILITY;
+		strcpy(outInfo->MIME, "image/jxl");
+		strlcpy(outInfo->name, B_TRANSLATE("JPEG-XL image"),
+			sizeof(outInfo->name));
 	}
-	else
-	{
-		// First two bytes should be 255 and 10
-		if (header[0] == (char)0xff && header[1] == char(0x0a))
-		{
-			if (PopulateInfoFromFormat(outInfo, JXL_FORMAT) != B_OK)
-			{
-				syslog(LOG_ERR, "Couldn't populate info\n");
-				return B_NO_TRANSLATOR;
-			}
-		}
-		else {
-			return B_NO_TRANSLATOR;
-		}		
+	else {
+		return B_NO_TRANSLATOR;
 	}
 	return B_OK;
 }
@@ -109,19 +107,10 @@ JxlMemoryToPixels(const uint8_t *next_in, size_t size, size_t *stride,
     syslog(LOG_ERR, "JxlDecoderCreate failed\n");
     return B_ERROR;
   }
-  void * runner = JxlThreadParallelRunnerCreate(NULL, JxlThreadParallelRunnerDefaultNumWorkerThreads());
-  if (JXL_DEC_SUCCESS !=
-      JxlDecoderSetParallelRunner(dec, JxlThreadParallelRunner, runner)) {
-    syslog(LOG_ERR, "JxlDecoderSetParallelRunner failed\n");
-    JxlThreadParallelRunnerDestroy(runner);
-    JxlDecoderDestroy(dec);
-    return B_ERROR;
-  }
   *has_alpha = 1; //we always create RGBA32 currently, see format below
   if (JXL_DEC_SUCCESS !=
       JxlDecoderSubscribeEvents(dec, JXL_DEC_BASIC_INFO | JXL_DEC_FULL_IMAGE)) {
     syslog(LOG_ERR, "JxlDecoderSubscribeEvents failed\n");
-    JxlThreadParallelRunnerDestroy(runner);
     JxlDecoderDestroy(dec);
     return B_ERROR;
   }
@@ -180,7 +169,6 @@ JxlMemoryToPixels(const uint8_t *next_in, size_t size, size_t *stride,
       break;
     }
   }
-  JxlThreadParallelRunnerDestroy(runner);
   JxlDecoderDestroy(dec);
 
   if (success){
@@ -194,110 +182,95 @@ JxlMemoryToPixels(const uint8_t *next_in, size_t size, size_t *stride,
 status_t
 JXLTranslator::BitmapPixelsToJxl(uint8* pixels, size_t size, int xsize, int ysize, uint32 bpp, int alphabits, uint32 align, BPositionIO* out)
 {
-	JxlEncoder *enc = JxlEncoderCreate(NULL);
-	void * runner = JxlThreadParallelRunnerCreate(NULL, JxlThreadParallelRunnerDefaultNumWorkerThreads());
-	
-	if (JXL_ENC_SUCCESS != JxlEncoderSetParallelRunner(enc, JxlThreadParallelRunner, runner))
+	if (bpp == 4 && alphabits == 0)
 	{
-		syslog(LOG_ERR, "JxlEncoderSetParallelRunner failed\n");
-		JxlThreadParallelRunnerDestroy(runner);
-		JxlEncoderDestroy(enc);
-		return B_ERROR;	
+		// JPEG-XL doesn't accept this combination, truncate
+		for (int i = 0; i < xsize * ysize; i++)
+		{
+			pixels[i*3] = pixels[i*4+2];
+			pixels[i*3+1] = pixels[i*4+1];
+			pixels[i*3+2] = pixels[i*4];
+		}
+		size = xsize * ysize * 3;
+		bpp = 3;
 	}
+
+	JxlEncoder *enc = JxlEncoderCreate(NULL);
 	JxlPixelFormat pixel_format = {bpp, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, align};
 	
 	JxlBasicInfo basic_info;
+	JxlEncoderInitBasicInfo(&basic_info);
 	basic_info.xsize = xsize;
 	basic_info.ysize = ysize;
 	basic_info.bits_per_sample = 8;
-	basic_info.exponent_bits_per_sample = 0; //not floating point
-	basic_info.num_color_channels = bpp == 1 ? 1 : 3;
+	basic_info.orientation = JXL_ORIENT_IDENTITY;
+	basic_info.num_color_channels = bpp;
+	basic_info.num_extra_channels = alphabits > 0 ? 1 : 0;
 	basic_info.alpha_bits = alphabits;
-	basic_info.alpha_exponent_bits = 0;
-	basic_info.uses_original_profile = JXL_FALSE;
 	
 	if (JXL_ENC_SUCCESS != JxlEncoderSetBasicInfo(enc, &basic_info))
 	{
 		syslog(LOG_ERR, "JxlEncoderSetBasicInfo failed\n");	
-		JxlThreadParallelRunnerDestroy(runner);
 		JxlEncoderDestroy(enc);
 		return B_ERROR;
 	}
-	
-	JxlEncoderOptions * options =JxlEncoderOptionsCreate(enc, NULL);
+
+	int32 distance = fSettings->SetGetInt32(JXL_SETTING_DISTANCE);
+	JxlEncoderOptions *options = JxlEncoderOptionsCreate(enc, NULL);
 	JxlEncoderOptionsSetEffort(options, fSettings->SetGetInt32(JXL_SETTING_EFFORT));
-	JxlEncoderOptionsSetDistance(options, (float)fSettings->SetGetInt32(JXL_SETTING_DISTANCE));
+	JxlEncoderOptionsSetDistance(options, (float)distance);
+	if (distance == 0)
+		JxlEncoderOptionsSetLossless(options, JXL_TRUE);
 	JxlColorEncoding color_encoding;
+	memset(&color_encoding, 0, sizeof(JxlColorEncoding));
 	JxlColorEncodingSetToSRGB(&color_encoding, bpp == 1);
-	
+
 	if (JXL_ENC_SUCCESS != JxlEncoderSetColorEncoding(enc, &color_encoding))
 	{
 		syslog(LOG_ERR, "JxlEncoderSetColorEncoding failed\n");	
-		JxlThreadParallelRunnerDestroy(runner);
 		JxlEncoderDestroy(enc);
-		return B_ERROR;			
+		return B_ERROR;
 	}
-	
+
 	if (JXL_ENC_SUCCESS != 
 		JxlEncoderAddImageFrame(options, &pixel_format, (void*)pixels, size))
 	{
 		syslog(LOG_ERR, "JxlEncoderAddImageFrame failed\n");
-		JxlThreadParallelRunnerDestroy(runner);
 		JxlEncoderDestroy(enc);
-		return B_ERROR;			
+		return B_ERROR;
 	}
-	size_t written;
-	size_t outSize = 64 * sizeof(uint8);
-	uint8 *output = (uint8*)malloc(outSize);
+	ssize_t written;
+	uint8* output = new uint8[4096];
 
-	uint8 * next_output = output;
-	size_t availOut = outSize - (next_output - output);
+	size_t availOut;
 	JxlEncoderStatus process_result = JXL_ENC_NEED_MORE_OUTPUT;
 	while (process_result == JXL_ENC_NEED_MORE_OUTPUT)
 	{
-		process_result = JxlEncoderProcessOutput(enc, &next_output, &availOut);
-		if (process_result == JXL_ENC_NEED_MORE_OUTPUT)
+		availOut = 4096;
+		uint8* nextOut = output;
+		process_result = JxlEncoderProcessOutput(enc, &nextOut, &availOut);
+		
+		written = out->Write(output, 4096-availOut);
+		if (written < B_OK)
 		{
-			next_output = output;
-			availOut = outSize;
-			written = out->Write(output, outSize);
-			if (written < B_OK) 
-			{
-				syslog(LOG_ERR, "Data write failed %d\n", written);
-				free(output);
-				return written;
-			}
-			if (written != outSize)
-			{
-				syslog(LOG_ERR, "Data write IO Error\n");					
-				free(output);
-				return B_IO_ERROR;
-			}
+			syslog(LOG_ERR, "Data write failed %d\n", written);
+			delete[] output;
+			return written;
+		}
+		if (written != (ssize_t)(4096 - availOut))
+		{
+			syslog(LOG_ERR, "Data write IO Error\n");
+			delete[] output;
+			return B_IO_ERROR;
 		}
 	}
-	outSize = next_output - output;
-	written = out->Write(output, outSize);
-	if (written < B_OK) 
-	{
-		syslog(LOG_ERR, "Data write failed %d\n", written);
-		free(output);
-		return written;
-	}
-	if (written != outSize)
-	{
-		syslog(LOG_ERR, "Data write IO Error\n");					
-		free(output);
-		return B_IO_ERROR;
-	}
-	free(output);
+	delete[] output;
 	if (JXL_ENC_SUCCESS != process_result)
 	{
-		JxlThreadParallelRunnerDestroy(runner);
 		JxlEncoderDestroy(enc);
 	    syslog(LOG_ERR,"JxlEncoderProcessOutput failed\n");
 	    return B_ERROR;			
 	}
-	JxlThreadParallelRunnerDestroy(runner);
 	JxlEncoderDestroy(enc);
 	return B_OK;
 }
@@ -310,20 +283,20 @@ JXLTranslator::Decompress(BPositionIO* in, BPositionIO* out)
  	int has_alpha;
  	off_t inSize = in->Seek(0, SEEK_END);
  	in->Seek(0, SEEK_SET);
-	
+
 	void * inData = malloc(inSize);
 	if (inData == NULL) {
 		syslog(LOG_ERR, "Couldn't malloc in space\n");
 		return B_NO_MEMORY;
 	}
-		
+
 	if (in->Read(inData, inSize) != inSize)
 	{
 		syslog(LOG_ERR, "Couldn't read in data\n");
 		free(inData);
 		return B_IO_ERROR;	
 	}
-	
+
 	status_t err = JxlMemoryToPixels((uint8_t*)inData, inSize, &stride, &xsize, &ysize, &has_alpha, convertedData);
 	free(inData); // not needed now
 	if (err != B_OK) return err;
@@ -331,6 +304,13 @@ JXLTranslator::Decompress(BPositionIO* in, BPositionIO* out)
 	{
 		syslog(LOG_ERR, "Invalid pointer returned\n");
 		return B_ILLEGAL_DATA;	
+	}
+	for (size_t i = 0; i < stride * ysize; i += 4)
+	{
+		// flip r and b so the coloring is correct
+		uint8 tmp = convertedData[i];
+		convertedData[i] = convertedData[i+2];
+		convertedData[i+2] = tmp;
 	}
 	BRect bounds(0, 0, xsize - 1, ysize - 1);
 	color_space outColorSpace = B_RGBA32;
@@ -373,36 +353,31 @@ JXLTranslator::Decompress(BPositionIO* in, BPositionIO* out)
 status_t 
 JXLTranslator::Compress(BPositionIO* in, BPositionIO* out)
 {
- 	off_t inSize = in->Seek(0, SEEK_END);
- 	in->Seek(0, SEEK_SET);
-	
-	inSize -= sizeof(TranslatorBitmap);
-	void * inData = malloc(inSize);
-	if (inData == NULL) {
-		syslog(LOG_ERR, "Couldn't malloc in space\n");
-		return B_NO_MEMORY;
-	}
-		
-	in->Seek(sizeof(TranslatorBitmap), SEEK_SET);
-	if (in->Read(inData, inSize) != inSize)
-	{
-		syslog(LOG_ERR, "Couldn't read in data\n");
-		free(inData);
-		return B_IO_ERROR;	
-	}
-	in->Seek(0, SEEK_SET);
 	TranslatorBitmap bmpHeader;
 	status_t err = identify_bits_header(in, NULL, &bmpHeader);
 	if (err != B_OK)
 	{
 		syslog(LOG_ERR, "Error identifying bitmap: %d\n", err);	
+		return err;
 	}
+	size_t inSize = bmpHeader.dataSize;
+	uint8* inData = new uint8[inSize];
+	if (in->Read(inData, inSize) != (ssize_t)inSize)
+	{
+		syslog(LOG_ERR, "Couldn't read in data\n");
+		delete[] inData;
+		return B_IO_ERROR;
+	}
+
 	//get bpp
 	uint32 bytesPerPixel = 0;
 	int32 alphaBits = 0;
 	switch (bmpHeader.colors) {
 		case B_RGB32:
 		case B_RGB32_BIG:
+			bytesPerPixel = 4;
+			alphaBits = 0;
+			break;
 		case B_RGBA32:
 		case B_RGBA32_BIG:
 			bytesPerPixel = 4;
@@ -432,7 +407,7 @@ JXLTranslator::Compress(BPositionIO* in, BPositionIO* out)
 	
 	//encoding now
 	err = BitmapPixelsToJxl((uint8*)inData, inSize, bmpHeader.bounds.IntegerWidth()+1, bmpHeader.bounds.IntegerHeight()+1, bytesPerPixel, alphaBits, 0, out);
-	free(inData);
+	delete[] inData;
 	return err;
 }
 
@@ -442,17 +417,17 @@ JXLTranslator::DerivedTranslate(BPositionIO* inSource,
 	const translator_info* inInfo, BMessage* ioExtension, uint32 outType,
 	BPositionIO* outDestination, int32 baseType)
 {
-	if (outType == inInfo->type)
+	if (baseType == 1)
 	{
-		translate_direct_copy(inSource, outDestination);	
-		return B_OK;
-	} else if (outType == JXL_FORMAT && inInfo->type == B_TRANSLATOR_BITMAP)
+		return Compress(inSource, outDestination);
+	}
+	else if (outType == JXL_FORMAT && inInfo->type == B_TRANSLATOR_BITMAP)
 	{
-		return Compress(inSource, outDestination);	
+		return Compress(inSource, outDestination);
 	}
 	else if (outType == B_TRANSLATOR_BITMAP && inInfo->type == JXL_FORMAT)
 	{
-		return Decompress(inSource, outDestination);	
+		return Decompress(inSource, outDestination);
 	}
 	return B_NO_TRANSLATOR;
 }
@@ -461,47 +436,6 @@ BView *
 JXLTranslator::NewConfigView(TranslatorSettings *settings)
 {
 	return new ConfigView(settings);	
-}
-
-/*! have the other PopulateInfoFromFormat() check both inputFormats & outputFormats */
-status_t
-JXLTranslator::PopulateInfoFromFormat(translator_info* info,
-	uint32 formatType, translator_id id)
-{
-	int32 formatCount;
-	const translation_format* formats = OutputFormats(&formatCount);
-	for (int i = 0; i <= 1 ;formats = InputFormats(&formatCount), i++) {
-		if (PopulateInfoFromFormat(info, formatType,
-			formats, formatCount) == B_OK) {
-			info->translator = id;
-			return B_OK;
-		}
-	}
-
-	return B_ERROR;
-}
-
-
-status_t
-JXLTranslator::PopulateInfoFromFormat(translator_info* info,
-	uint32 formatType, const translation_format* formats, int32 formatCount)
-{
-	for (int i = 0; i < formatCount; i++) {
-		if (formats[i].type == formatType) {
-			info->type = formatType;
-			info->group = formats[i].group;
-			info->quality = formats[i].quality;
-			info->capability = formats[i].capability;
-			BString str1(formats[i].name);
-			str1.ReplaceFirst("Be Bitmap Format (JXLTranslator)", 
-				B_TRANSLATE("Be Bitmap Format (JXLTranslator)"));
-			strlcpy(info->name, str1.String(), sizeof(info->name));
-			strcpy(info->MIME,  formats[i].MIME);
-			return B_OK;
-		}
-	}
-
-	return B_ERROR;
 }
 
 BTranslator*

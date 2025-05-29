@@ -13,7 +13,7 @@ TARGET_DIR = .
 #	SHARED:	Shared library or add-on
 #	STATIC:	Static library archive
 #	DRIVER: Kernel driver
-TYPE = SHARED
+TYPE = APP
 
 # 	If you plan to use localization, specify the application's MIME signature.
 APP_MIME_SIG = 
@@ -32,11 +32,12 @@ APP_MIME_SIG =
 SRCS =  BaseTranslator.cpp \
  TranslatorSettings.cpp \
  configview.cpp \
- jxltranslator.cpp
+ jxltranslator.cpp \
+ JXLMain.cpp
 
 #	Specify the resource definition files to use. Full or relative paths can be
 #	used.
-RDEFS = 
+RDEFS = JXLTranslator.rdef
 
 #	Specify the resource files to use. Full or relative paths can be used.
 #	Both RDEFS and RSRCS can be utilized in the same Makefile.
@@ -58,7 +59,7 @@ RSRCS =
 #	- 	if your library does not follow the standard library naming scheme,
 #		you need to specify the path to the library and it's name.
 #		(e.g. for mylib.a, specify "mylib.a" or "path/mylib.a")
-LIBS =  be shared jxl jxl_threads localestub
+LIBS =  be shared jxl jxl_threads localestub translation
 
 #	Specify additional paths to directories following the standard libXXX.so
 #	or libXXX.a naming scheme. You can specify full paths or paths relative
@@ -79,7 +80,7 @@ LOCAL_INCLUDE_PATHS =  .
 
 #	Specify the level of optimization that you want. Specify either NONE (O0),
 #	SOME (O1), FULL (O2), or leave blank (for the default optimization level).
-OPTIMIZE := FULL
+OPTIMIZE := NONE
 
 # 	Specify the codes for languages you are going to support in this
 # 	application. The default "en" one must be provided too. "make catkeys"
@@ -97,21 +98,21 @@ DEFINES =
 
 #	Specify the warning level. Either NONE (suppress all warnings),
 #	ALL (enable all warnings), or leave blank (enable default warnings).
-WARNINGS = 
+WARNINGS = ALL
 
 #	With image symbols, stack crawls in the debugger are meaningful.
 #	If set to "TRUE", symbols will be created.
-SYMBOLS := 
+SYMBOLS := TRUE
 
 #	Includes debug information, which allows the binary to be debugged easily.
 #	If set to "TRUE", debug info will be created.
-DEBUGGER := 
+DEBUGGER := TRUE
 
 #	Specify any additional compiler flags to be used.
 COMPILER_FLAGS = 
 
 #	Specify any additional linker flags to be used.
-LINKER_FLAGS = 
+LINKER_FLAGS = -Xlinker -soname="JXLTranslator"
 
 #	(Only used when "TYPE" is "DRIVER"). Specify the desired driver install
 #	location in the /dev hierarchy. Example:

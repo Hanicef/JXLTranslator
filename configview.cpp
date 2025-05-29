@@ -1,5 +1,6 @@
 /*
  * Copyright 2021, Craig Watson <watsoncraigjohn@gmail.com>
+ * Copyright 2025, Gustaf "Hanicef" Alhäll <gustaf@hanicef.me>
  * All rights reserved. Distributed under the terms of the MIT license.
  */
 

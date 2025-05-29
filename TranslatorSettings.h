@@ -88,3 +88,4 @@ private:
 };
 
 #endif // #ifndef TRANSLATOR_SETTTINGS_H
+
